@@ -43,8 +43,10 @@ void ESPChargerComponent::loop() {
       continue;
     }
 
+    ESP_LOG_BUFFER_HEXDUMP(TAG, this->rx_buffer_.data(), this->rx_buffer_.size(), ESP_LOG_WARN);
+    
     const uint8_t payload_len = this->rx_buffer_[5];
-    const size_t frame_len = 2 + 1 + 2 + 1 + payload_len + 2;
+    const size_t frame_len = payload_len + 8;
     if (this->rx_buffer_.size() < frame_len)
       return;
 
