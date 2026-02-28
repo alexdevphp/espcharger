@@ -15,15 +15,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.GenerateID(): cv.use_id(ESPChargerComponent),
         cv.Optional(CONF_VOLTAGE): number.number_schema(
             ESPChargerVoltageNumber,
-            min_value=10,
-            max_value=93,
-            step=1,
         ),
         cv.Optional(CONF_CURRENT): number.number_schema(
             ESPChargerCurrentNumber,
-            min_value=1,
-            max_value=20,
-            step=1,
         ),
     }
 )
@@ -33,11 +27,11 @@ async def to_code(config):
     parent = await cg.get_variable(config[CONF_ID])
 
     if voltage_config := config.get(CONF_VOLTAGE):
-        var = await number.new_number(voltage_config)
+        var = await number.new_number(voltage_config, min_value=10, max_value=93, step=1)
         await cg.register_parented(var, config[CONF_ID])
         cg.add(parent.set_voltage_number(var))
 
     if current_config := config.get(CONF_CURRENT):
-        var = await number.new_number(current_config)
+        var = await number.new_number(current_config, min_value=1, max_value=20, step=1)
         await cg.register_parented(var, config[CONF_ID])
         cg.add(parent.set_current_number(var))
