@@ -13,12 +13,12 @@ static const uint8_t FRAME_HEADER_2 = 0x55;
 
 void ESPChargerComponent::setup() {
   ESP_LOGCONFIG(TAG, "Setting up ESPCharger UART component...");
+  delay(1000);
   this->enable_edit();
 }
 
 void ESPChargerComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "ESPCharger:");
-  LOG_UPDATE_INTERVAL(this);
   LOG_SENSOR("  ", "Telemetry Voltage", this->telemetry_voltage_sensor_);
   LOG_SENSOR("  ", "Telemetry Current", this->telemetry_current_sensor_);
   LOG_SENSOR("  ", "Charge Counter", this->charge_counter_sensor_);
@@ -28,13 +28,12 @@ void ESPChargerComponent::dump_config() {
   LOG_SENSOR("  ", "Charging State", this->charging_state_sensor_);
 }
 
-void ESPChargerComponent::update() { this->request_telemetry(); }
-
 void ESPChargerComponent::loop() {
   while (this->available()) {
     uint8_t byte;
     this->read_byte(&byte);
     this->rx_buffer_.push_back(byte);
+    ESP_LOGD(TAG, "READ %s", byte);
   }
 
   while (this->rx_buffer_.size() >= 8) {
@@ -43,12 +42,18 @@ void ESPChargerComponent::loop() {
       continue;
     }
 
-    ESP_LOG_BUFFER_HEXDUMP(TAG, this->rx_buffer_.data(), this->rx_buffer_.size(), ESP_LOGW);
-    
     const uint8_t payload_len = this->rx_buffer_[5];
     const size_t frame_len = payload_len + 8;
     if (this->rx_buffer_.size() < frame_len)
       return;
+
+    std::string hex;
+    for (int i = 0; i < this->rx_buffer_.size(); i++) {
+        char buf[4];
+        snprintf(buf, sizeof(buf), "%02X ", this->rx_buffer_[i]);
+        hex += buf;
+    }
+    ESP_LOGD(TAG, "<<HEX: %s", hex.c_str());
 
     std::vector<uint8_t> frame(this->rx_buffer_.begin(), this->rx_buffer_.begin() + frame_len);
     this->rx_buffer_.erase(this->rx_buffer_.begin(), this->rx_buffer_.begin() + frame_len);
@@ -179,6 +184,14 @@ void ESPChargerComponent::send_frame_(uint8_t msg_type, uint16_t address, const 
   frame.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
   frame.push_back(static_cast<uint8_t>(crc & 0xFF));
 
+  std::string hex;
+  for (int i = 0; i < frame.size(); i++) {
+        char buf[4];
+        snprintf(buf, sizeof(buf), "%02X ", frame[i]);
+        hex += buf;
+  }
+  ESP_LOGD(TAG, ">>HEX: %s", hex.c_str());
+
   this->write_array(frame);
   this->flush();
 }
@@ -277,7 +290,9 @@ void ESPChargerChargingSwitch::write_state(bool state) {
 
 void ESPChargerEnableEditButton::press_action() { this->parent_->enable_edit(); }
 
-void ESPChargerGetTelemetryButton::press_action() { this->parent_->request_telemetry(); }
+void ESPChargerGetTelemetryButton::press_action() { 
+    this->parent_->request_telemetry(); 
+}
 
 }  // namespace espcharger
 }  // namespace esphome

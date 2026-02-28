@@ -12,12 +12,11 @@
 namespace esphome {
 namespace espcharger {
 
-class ESPChargerComponent : public PollingComponent, public uart::UARTDevice {
+class ESPChargerComponent : public uart::UARTDevice,  public Component {
  public:
   void setup() override;
   void dump_config() override;
   void loop() override;
-  void update() override;
 
   void set_telemetry_voltage_sensor(sensor::Sensor *sensor) { this->telemetry_voltage_sensor_ = sensor; }
   void set_telemetry_current_sensor(sensor::Sensor *sensor) { this->telemetry_current_sensor_ = sensor; }
