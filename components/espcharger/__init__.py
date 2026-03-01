@@ -9,19 +9,17 @@ AUTO_LOAD = ["sensor", "number", "switch", "button"]
 
 espcharger_ns = cg.esphome_ns.namespace("espcharger")
 ESPChargerComponent = espcharger_ns.class_(
-    "ESPChargerComponent", uart.UARTDevice
+    "ESPChargerComponent", cg.Component, uart.UARTDevice
 )
 
-CONFIG_SCHEMA = (
-    cv.Schema(
-        {
-            cv.GenerateID(): cv.declare_id(ESPChargerComponent),
-        }
-    )
-    .extend(uart.UART_DEVICE_SCHEMA)
-)
+CONFIG_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.declare_id(ESPChargerComponent),
+    }
+).extend(uart.UART_DEVICE_SCHEMA)
 
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
+    await cg.register_component(var, config)
     await uart.register_uart_device(var, config)

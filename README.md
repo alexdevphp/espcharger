@@ -22,7 +22,9 @@ On startup component sends `ENABLE EDIT`:
 
 - `11 55 4c 00 40 02 a4 5b + CRC`
 
-Every update interval (`1s` default) component sends `GET TELEMETRY`:
+MCU sends telemetry autonomously (about once per second).
+
+`GET TELEMETRY` can still be sent manually using the button entity:
 
 - `11 55 52 0a 01 01 18 + CRC`
 
@@ -53,7 +55,6 @@ uart:
 espcharger:
   id: charger
   uart_id: charger_uart
-  update_interval: 1s
 
 sensor:
   - platform: espcharger

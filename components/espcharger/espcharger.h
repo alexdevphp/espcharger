@@ -12,11 +12,13 @@
 namespace esphome {
 namespace espcharger {
 
-class ESPChargerComponent : public uart::UARTDevice,  public Component {
+class ESPChargerComponent : public Component, public uart::UARTDevice {
  public:
   void setup() override;
   void dump_config() override;
   void loop() override;
+  float get_setup_priority() const override;
+  float get_loop_priority() const override;
 
   void set_telemetry_voltage_sensor(sensor::Sensor *sensor) { this->telemetry_voltage_sensor_ = sensor; }
   void set_telemetry_current_sensor(sensor::Sensor *sensor) { this->telemetry_current_sensor_ = sensor; }
