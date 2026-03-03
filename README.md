@@ -43,8 +43,10 @@ MCU sends telemetry autonomously (about once per second).
 ```yaml
 external_components:
   - source:
-      type: local
-      path: .
+      type: git
+      url: https://github.com/alexdevphp/espcharger.git
+    components: [ espcharger ]
+    refresh: always
 
 uart:
   id: charger_uart
