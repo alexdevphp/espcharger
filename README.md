@@ -1,6 +1,6 @@
 # espcharger
 
-External ESPHome component for Li-Ion Battery Charger ZZ-ST-20.
+External ESPHome component for Li-Ion Battery Charger SouthROL ZZ-ST-20.
 
 ## Protocol
 
