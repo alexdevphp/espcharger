@@ -89,12 +89,4 @@ switch:
     id: charger
     charging:
       name: "Charging"
-
-button:
-  - platform: espcharger
-    id: charger
-    enable_edit:
-      name: "Enable Edit"
-    get_telemetry:
-      name: "Get Telemetry"
 ```
