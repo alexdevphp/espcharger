@@ -1,9 +1,6 @@
 #include "espcharger.h"
-
 #include <cmath>
-
 #include "esphome/core/log.h"
-#include "esphome/core/setup_priority.h"
 
 namespace esphome {
 namespace espcharger {
@@ -19,156 +16,276 @@ void ESPChargerComponent::setup() {
 
 void ESPChargerComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "ESPCharger:");
-  LOG_SENSOR("  ", "Telemetry Voltage", this->telemetry_voltage_sensor_);
-  LOG_SENSOR("  ", "Telemetry Current", this->telemetry_current_sensor_);
-  LOG_SENSOR("  ", "Charge Counter", this->charge_counter_sensor_);
-  LOG_SENSOR("  ", "Temperature 1", this->temperature1_sensor_);
-  LOG_SENSOR("  ", "Temperature 2", this->temperature2_sensor_);
-  LOG_SENSOR("  ", "Mode", this->mode_sensor_);
-  LOG_SENSOR("  ", "Charging State", this->charging_state_sensor_);
+  LOG_UPDATE_INTERVAL(this);
+  LOG_SENSOR("  ", "Output Voltage", this->output_voltage_sensor);
+  LOG_SENSOR("  ", "Output Current", this->output_current_sensor);
+  LOG_SENSOR("  ", "Charge Counter", this->charge_counter_sensor);
+  LOG_SENSOR("  ", "Temperature 1", this->temperature1_sensor);
+  LOG_SENSOR("  ", "Temperature 2", this->temperature2_sensor);
+  LOG_SENSOR("  ", "Mode", this->mode_sensor);
+  LOG_SENSOR("  ", "Charging State", this->charging_state_sensor);
 }
 
+void ESPChargerComponent::update() { }
 
+void ESPChargerComponent::loop() { 
 
-float ESPChargerComponent::get_setup_priority() const { return setup_priority::DATA; }
+  if(millis() - config_req_time > 2000) {
+    config_req_time = millis();
+    this->request_status();
+  }
 
-float ESPChargerComponent::get_loop_priority() const { return 20.0f; }
+  if(this->read_data()) {
+    if (this->frame.msg_type == 0x53) {
+      this->parse_telemetry();
+    }    
+  } 
+}
 
-void ESPChargerComponent::loop() {
+bool ESPChargerComponent::read_data() {
   while (this->available()) {
     uint8_t byte;
     this->read_byte(&byte);
-    this->rx_buffer_.push_back(byte);
+    this->rx_buffer.push_back(byte);
   }
 
-  while (this->rx_buffer_.size() >= 8) {
-    if (this->rx_buffer_[0] != FRAME_HEADER_1 || this->rx_buffer_[1] != FRAME_HEADER_2) {
-      this->rx_buffer_.erase(this->rx_buffer_.begin());
+  while (this->rx_buffer.size() >= 8) {
+    if (this->rx_buffer[0] != FRAME_HEADER_1 || this->rx_buffer[1] != FRAME_HEADER_2) {
+      this->rx_buffer.erase(this->rx_buffer.begin());
       continue;
     }
 
-    const uint8_t payload_len = this->rx_buffer_[5];
-    const size_t frame_len = 2 + 1 + 2 + 1 + payload_len + 2;
-    if (this->rx_buffer_.size() < frame_len)
-      return;
+    const uint8_t payload_len = this->rx_buffer[5];
+    const size_t frame_len = payload_len + 8;
+    if (this->rx_buffer.size() < frame_len) {
+      return false;
+    }
 
-    std::vector<uint8_t> frame(this->rx_buffer_.begin(), this->rx_buffer_.begin() + frame_len);
-    this->rx_buffer_.erase(this->rx_buffer_.begin(), this->rx_buffer_.begin() + frame_len);
-    this->parse_frame_(frame);
+    std::vector<uint8_t> fdata(this->rx_buffer.begin(), this->rx_buffer.begin() + frame_len);
+
+    std::string hex;
+    for (int i = 0; i < fdata.size(); i++) {
+          char buf[4];
+          snprintf(buf, sizeof(buf), "%02X ", fdata[i]);
+          hex += buf;
+    }
+    ESP_LOGD(TAG, "<<HEX: %s", hex.c_str());
+
+    this->rx_buffer.erase(this->rx_buffer.begin(), this->rx_buffer.begin() + frame_len);
+    
+    this->frame.msg_type = fdata[2];
+    this->frame.payload_len = fdata[5];
+    this->frame.address = (static_cast<uint16_t>(fdata[3]) << 8) | fdata[4];
+
+    const uint16_t expected_crc = (static_cast<uint16_t>(fdata[fdata.size() - 2]) << 8) | fdata[fdata.size() - 1];
+    const uint16_t actual_crc = crc16_cms(fdata.data(), fdata.size() - 2);
+
+    if (expected_crc != actual_crc) {
+      ESP_LOGW(TAG, "CRC mismatch: exp=0x%04X got=0x%04X", expected_crc, actual_crc);
+      return false;
+    }
+    this->frame.payload.assign(fdata.begin() + 6, fdata.begin() + 6 + payload_len);
+    return true;
   }
-}
+  return false;
+} 
 
 void ESPChargerComponent::set_voltage(float voltage) {
-  const float v = std::max(10.0f, std::min(93.0f, voltage));
+  //const float v = std::max(10.0f, std::min(this->max_voltage, voltage));
+  const float v = voltage;
 
-  std::vector<uint8_t> p1;
-  p1.reserve(16);
-  p1.push_back(0x01);
-  p1.push_back(0x04);
-  const uint16_t x48_5 = to_le_u16_(v, 48.5f);
-  p1.push_back(static_cast<uint8_t>(x48_5 & 0xFF));
-  p1.push_back(static_cast<uint8_t>((x48_5 >> 8) & 0xFF));
-  p1.push_back(0x64);
-  p1.push_back(0x00);
-  const uint16_t v100 = to_le_u16_(v, 100.0f);
+  const uint16_t x48_5 = std::roundf(v * 48.5f);
+  const uint16_t v100 = std::roundf(v * 100.0f);
+  const uint8_t msg_type = 0x57;
+
+  std::vector<uint8_t> v1;
+  v1.reserve(16);
+  v1.insert(v1.end(), { 
+    0x01, 0x04, 
+    static_cast<uint8_t>(x48_5 & 0xFF), 
+    static_cast<uint8_t>((x48_5 >> 8) & 0xFF), 
+    0x64, 0x00, 0x32, 0x00 
+  });
+
   for (int i = 0; i < 4; i++) {
-    p1.push_back(static_cast<uint8_t>(v100 & 0xFF));
-    p1.push_back(static_cast<uint8_t>((v100 >> 8) & 0xFF));
+    v1.push_back(static_cast<uint8_t>(v100 & 0xFF));
+    v1.push_back(static_cast<uint8_t>((v100 >> 8) & 0xFF));
   }
-  this->write_register_(0x0102, p1);
+  this->send_data(0x0102, msg_type, v1);
+  
+  ///----------
+  const uint16_t x81 = std::roundf(v * 81.0f);
+  const uint16_t x100 = std::roundf(v * 100.0f - 100.0f);
+  
+  std::vector<uint8_t> v2;
+  v2.reserve(8);
+  v2.insert(v2.end(), { 
+    static_cast<uint8_t>(x81 & 0xFF), 
+    static_cast<uint8_t>((x81 >> 8) & 0xFF),
+    static_cast<uint8_t>(x100 & 0xFF), 
+    static_cast<uint8_t>((x100 >> 8) & 0xFF),
+    0xff, 0xff, 0xff, 0xff
+  });
+  
+  this->send_data(0x011A, msg_type, v2);
 
-  std::vector<uint8_t> p2;
-  p2.reserve(8);
-  const uint16_t x81 = to_le_u16_(v, 81.0f);
-  p2.push_back(static_cast<uint8_t>(x81 & 0xFF));
-  p2.push_back(static_cast<uint8_t>((x81 >> 8) & 0xFF));
-  const uint16_t x100_m100 = static_cast<uint16_t>(std::roundf(v * 100.0f - 100.0f));
-  p2.push_back(static_cast<uint8_t>(x100_m100 & 0xFF));
-  p2.push_back(static_cast<uint8_t>((x100_m100 >> 8) & 0xFF));
-  p2.push_back(0xFF);
-  p2.push_back(0xFF);
-  p2.push_back(0xFF);
-  p2.push_back(0xFF);
-  this->write_register_(0x011A, p2);
+  //---------
+  const uint16_t x53_3 = std::roundf(v * 53.3f);
+  const uint16_t x80 = std::roundf(v * 80.0f);
 
-  std::vector<uint8_t> p3;
-  p3.reserve(8);
-  const uint16_t x53_3 = to_le_u16_(v, 53.3f);
-  p3.push_back(static_cast<uint8_t>(x53_3 & 0xFF));
-  p3.push_back(static_cast<uint8_t>((x53_3 >> 8) & 0xFF));
-  const uint16_t x80 = to_le_u16_(v, 80.0f);
-  p3.push_back(static_cast<uint8_t>(x80 & 0xFF));
-  p3.push_back(static_cast<uint8_t>((x80 >> 8) & 0xFF));
-  p3.push_back(0xB4);
-  p3.push_back(0x00);
-  p3.push_back(0x2C);
-  p3.push_back(0x01);
-  this->write_register_(0x019E, p3);
+  std::vector<uint8_t> v3;
+  v3.reserve(8);
+  v2.insert(v2.end(), { 
+    static_cast<uint8_t>(x53_3 & 0xFF), 
+    static_cast<uint8_t>((x53_3 >> 8) & 0xFF),
+    static_cast<uint8_t>(x80 & 0xFF), 
+    static_cast<uint8_t>((x80 >> 8) & 0xFF),
+    0xb4, 0x00, 0x2c, 0x01
+  });
 
-  std::vector<uint8_t> p4;
-  p4.reserve(7);
-  p4.push_back(0x02);
-  const uint16_t x79_3 = to_le_u16_(v, 79.3f);
-  p4.push_back(static_cast<uint8_t>(x79_3 & 0xFF));
-  p4.push_back(static_cast<uint8_t>((x79_3 >> 8) & 0xFF));
-  const uint16_t x86_1 = to_le_u16_(v, 86.1f);
-  p4.push_back(static_cast<uint8_t>(x86_1 & 0xFF));
-  p4.push_back(static_cast<uint8_t>((x86_1 >> 8) & 0xFF));
-  const uint16_t x98_2 = to_le_u16_(v, 98.2f);
-  p4.push_back(static_cast<uint8_t>(x98_2 & 0xFF));
-  p4.push_back(static_cast<uint8_t>((x98_2 >> 8) & 0xFF));
-  this->write_register_(0x01B9, p4);
+  this->send_data(0x019E, msg_type, v3);
 
-  if (this->voltage_number_ != nullptr)
-    this->voltage_number_->publish_state(v);
+  //----------
+  const uint16_t x79_3 = std::roundf(v * 79.3f);
+  const uint16_t x86_1 = std::roundf(v * 86.1f);
+  const uint16_t x98_2 = std::roundf(v * 98.2f);
+
+  std::vector<uint8_t> v4;
+  v4.reserve(7);
+  v2.insert(v2.end(), { 0x02,
+    static_cast<uint8_t>(x79_3 & 0xFF), 
+    static_cast<uint8_t>((x79_3 >> 8) & 0xFF),
+    static_cast<uint8_t>(x86_1 & 0xFF), 
+    static_cast<uint8_t>((x86_1 >> 8) & 0xFF),
+    static_cast<uint8_t>(x98_2 & 0xFF), 
+    static_cast<uint8_t>((x98_2 >> 8) & 0xFF),
+  });
+  this->send_data(0x01B9, msg_type, v4);
 }
 
 void ESPChargerComponent::set_current(float current) {
-  const float c = std::max(1.0f, std::min(20.0f, current));
+  //const float c = std::max(1.0f, std::min(this->max_current, current));
+  const float c = current;
+  const uint8_t msg_type = 0x57;
+
+  const uint16_t x33 = std::roundf(c * 33.0f);
+  const uint16_t c100 = std::roundf(c * 100.0f);
+  const uint16_t x80 = std::roundf(c * 80.0f);
 
   std::vector<uint8_t> p1;
   p1.reserve(8);
-  const uint16_t x33 = to_le_u16_(c, 33.0f);
-  p1.push_back(static_cast<uint8_t>(x33 & 0xFF));
-  p1.push_back(static_cast<uint8_t>((x33 >> 8) & 0xFF));
-  const uint16_t c100 = to_le_u16_(c, 100.0f);
-  p1.push_back(static_cast<uint8_t>(c100 & 0xFF));
-  p1.push_back(static_cast<uint8_t>((c100 >> 8) & 0xFF));
-  const uint16_t x80 = to_le_u16_(c, 80.0f);
-  p1.push_back(static_cast<uint8_t>(x80 & 0xFF));
-  p1.push_back(static_cast<uint8_t>((x80 >> 8) & 0xFF));
-  p1.push_back(static_cast<uint8_t>(c100 & 0xFF));
-  p1.push_back(static_cast<uint8_t>((c100 >> 8) & 0xFF));
-  this->write_register_(0x012A, p1);
+  p1.insert(p1.end(), {
+    static_cast<uint8_t>(x33 & 0xFF), 
+    static_cast<uint8_t>((x33 >> 8) & 0xFF),
+    static_cast<uint8_t>(c100 & 0xFF), 
+    static_cast<uint8_t>((c100 >> 8) & 0xFF),
+    static_cast<uint8_t>(x80 & 0xFF), 
+    static_cast<uint8_t>((x80 >> 8) & 0xFF),
+    static_cast<uint8_t>(c100 & 0xFF), 
+    static_cast<uint8_t>((c100 >> 8) & 0xFF)
+  });
+  this->send_data(0x012A, msg_type, p1);
 
-  std::vector<uint8_t> p2{0x00, 0x00, 0x00, 0x00, static_cast<uint8_t>((c > 14.0f) ? 200 : 80), 0x00, 0x00, 0x00};
-  this->write_register_(0x013A, p2);
 
-  if (this->current_number_ != nullptr)
-    this->current_number_->publish_state(c);
+  const uint16_t x200 = static_cast<uint16_t>((c > 14.0f) ? 200 : 80);
+
+  std::vector<uint8_t> p2 {
+    0x00, 0x00, 0x00, 0x00,
+    static_cast<uint8_t>(x200 & 0xFF), 
+    static_cast<uint8_t>((x200 >> 8) & 0xFF),
+    0x00, 0x00, 0x00
+  };
+  this->send_data(0x013A, msg_type, p2);
 }
 
 void ESPChargerComponent::start_charging() {
-  this->write_register_(0x0502, {0xA8});
-  this->set_switch_state_(true);
+  const bool ok = this->send_data(0x0502, 0x57, {0xA8});
+  if(ok) this->set_switch_state(true);
 }
 
 void ESPChargerComponent::stop_charging() {
-  this->write_register_(0x0502, {0xA1});
-  this->set_switch_state_(false);
+  const bool ok = this->send_data(0x0502, 0x57, {0xA1});
+  if(ok) this->set_switch_state(false);
 }
 
-void ESPChargerComponent::enable_edit() { this->send_frame_(0x4C, 0x0040, {0xA4, 0x5B}); }
-
-void ESPChargerComponent::request_telemetry() { this->send_frame_(0x52, 0x0A01, {0x18}); }
-
-void ESPChargerComponent::write_register_(uint16_t address, const std::vector<uint8_t> &payload) {
-  this->send_frame_(0x57, address, payload);
+void ESPChargerComponent::enable_edit() { 
+  this->send_data(0x0040, 0x4C, {0xA4, 0x5B});
 }
 
-void ESPChargerComponent::send_frame_(uint8_t msg_type, uint16_t address, const std::vector<uint8_t> &payload) {
+void ESPChargerComponent::request_status() { 
+  this->send_frame(0x0102, 0x52, {0x10});
+  if(wait_for_resp(0x0102, 200)) {
+    const uint16_t voltage = this->read_u16(14);
+    this->voltage_number->publish_state(voltage / 100.0f);
+  }
+
+  std::vector<uint8_t> p2 = {0x10};
+  this->send_frame(0x012a, 0x52, {0x10});
+  if(wait_for_resp(0x012a, 200)) {
+    const uint16_t current = this->read_u16(6);
+    this->current_number->publish_state(current / 100.0f);
+  }
+
+  this->send_frame(0x0A00, 0x52, {0x18});
+  if(wait_for_resp(0x0A00, 200)) {
+    parse_telemetry();
+  }
+
+}
+
+bool ESPChargerComponent::wait_for_resp(uint16_t address, uint32_t timeout_ms) {
+  const uint32_t start = millis();
+  while (millis() - start < timeout_ms) {
+    bool ok = this->read_data();
+    if(ok && this->frame.address == address) return true;
+  }
+  ESP_LOGW(TAG, "Response timeout");
+  return false;
+}
+
+bool ESPChargerComponent::send_data(uint16_t address, uint8_t msg_type, const std::vector<uint8_t> &payload) {
+  uint8_t payload_size = payload.size();
+
+  for (uint8_t attempt = 1; attempt <= 3; attempt++) {
+    this->send_frame(address, msg_type, payload);
+
+    if (this->wait_for_ack(address, payload_size, 200)) {
+      ESP_LOGD(TAG, "SENT OK");
+      return true;
+    }
+
+    ESP_LOGW(TAG, "ACK timeout/mismatch for addr=0x%04X, attempt %u", address, attempt);
+  }
+
+  return false;
+}
+
+bool ESPChargerComponent::wait_for_ack(uint16_t address, uint8_t payload_size, uint32_t timeout_ms) {
+  std::vector<uint8_t> ack = {payload_size, 0x4f, 0x4b};
+
+  const uint32_t start = millis();
+  while (millis() - start < timeout_ms) {
+    bool ok = this->read_data();
+
+    if (ok && this->frame.msg_type == 0x42 && this->frame.address == address) {
+      if (this->frame.payload == ack) {
+        return true;
+      }
+
+      ESP_LOGW(TAG, "ACK payload mismatch addr=0x%04X expected_len=%u got_len=%u", address,
+               static_cast<unsigned>(ack.size()),
+               static_cast<unsigned>(this->frame.payload.size()));
+      return false;
+    }
+    delay(1);
+  }
+  return false;
+}
+
+
+void ESPChargerComponent::send_frame(uint16_t address, uint8_t msg_type, const std::vector<uint8_t> &payload) {
   std::vector<uint8_t> frame;
-  frame.reserve(2 + 1 + 2 + 1 + payload.size() + 2);
+  frame.reserve(payload.size() + 8);
   frame.push_back(FRAME_HEADER_1);
   frame.push_back(FRAME_HEADER_2);
   frame.push_back(msg_type);
@@ -177,82 +294,71 @@ void ESPChargerComponent::send_frame_(uint8_t msg_type, uint16_t address, const 
   frame.push_back(static_cast<uint8_t>(payload.size()));
   frame.insert(frame.end(), payload.begin(), payload.end());
 
-  const uint16_t crc = crc16_cms_(frame);
+  const uint16_t crc = crc16_cms(frame);
   frame.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
   frame.push_back(static_cast<uint8_t>(crc & 0xFF));
+
+  std::string hex;
+  for (int i = 0; i < frame.size(); i++) {
+        char buf[4];
+        snprintf(buf, sizeof(buf), "%02X ", frame[i]);
+        hex += buf;
+  }
+  ESP_LOGD(TAG, ">>HEX: %s", hex.c_str());
 
   this->write_array(frame);
   this->flush();
 }
 
-bool ESPChargerComponent::parse_frame_(std::vector<uint8_t> &frame) {
-  const uint8_t msg_type = frame[2];
-  const uint8_t payload_len = frame[5];
-  const uint16_t expected_crc = (static_cast<uint16_t>(frame[frame.size() - 2]) << 8) | frame[frame.size() - 1];
-  const uint16_t actual_crc = crc16_cms_(frame.data(), frame.size() - 2);
+  
+uint16_t ESPChargerComponent::read_u16(size_t index) {
+  return (this->frame.payload[index]) | ((this->frame.payload[index + 1]) << 8);
+};
 
-  if (expected_crc != actual_crc) {
-    ESP_LOGW(TAG, "CRC mismatch: exp=0x%04X got=0x%04X", expected_crc, actual_crc);
+bool ESPChargerComponent::parse_telemetry() {
+  if (this->frame.payload.size() < 24) {
+    ESP_LOGW(TAG, "Telemetry payload too short: %u", static_cast<unsigned>(this->frame.payload.size()));
     return false;
   }
 
-  std::vector<uint8_t> payload(frame.begin() + 6, frame.begin() + 6 + payload_len);
+  const uint16_t voltage_raw = this->read_u16(4);
+  const uint16_t current_raw = this->read_u16(6);
+  const uint16_t counter_raw = this->read_u16(14);
+  const uint16_t temp1_raw = this->read_u16(16);
+  const uint16_t temp2_raw = this->read_u16(18);
+  const uint8_t mode = this->frame.payload[21];
+  const uint8_t charging_state = this->frame.payload[22];
 
-  if (msg_type == 0x53) {
-    return this->parse_telemetry_(payload);
-  }
+  if (this->output_voltage_sensor != nullptr)
+    this->output_voltage_sensor->publish_state(voltage_raw / 100.0f);
+  if (this->output_current_sensor != nullptr)
+    this->output_current_sensor->publish_state(current_raw / 100.0f);
+  if (this->charge_counter_sensor != nullptr)
+    this->charge_counter_sensor->publish_state(counter_raw);
+  if (this->temperature1_sensor != nullptr)
+    this->temperature1_sensor->publish_state(temp1_raw);
+  if (this->temperature2_sensor != nullptr)
+    this->temperature2_sensor->publish_state(temp2_raw);
+  if (this->mode_sensor != nullptr)
+    this->mode_sensor->publish_state(mode);
+  if (this->charging_state_sensor != nullptr)
+    this->charging_state_sensor->publish_state(charging_state);
+
+  this->set_switch_state(charging_state == 1);
 
   return true;
 }
 
-bool ESPChargerComponent::parse_telemetry_(const std::vector<uint8_t> &payload) {
-  if (payload.size() < 24) {
-    ESP_LOGW(TAG, "Telemetry payload too short: %u", static_cast<unsigned>(payload.size()));
-    return false;
-  }
-
-  const auto read_u16 = [&payload](size_t index) -> uint16_t {
-    return static_cast<uint16_t>(payload[index]) | (static_cast<uint16_t>(payload[index + 1]) << 8);
-  };
-
-  const uint16_t voltage_raw = read_u16(4);
-  const uint16_t current_raw = read_u16(6);
-  const uint16_t counter_raw = read_u16(14);
-  const uint16_t temp1_raw = read_u16(16);
-  const uint16_t temp2_raw = read_u16(18);
-  const uint8_t mode = payload[21];
-  const uint8_t charging_state = payload[22];
-
-  if (this->telemetry_voltage_sensor_ != nullptr)
-    this->telemetry_voltage_sensor_->publish_state(voltage_raw / 100.0f);
-  if (this->telemetry_current_sensor_ != nullptr)
-    this->telemetry_current_sensor_->publish_state(current_raw / 100.0f);
-  if (this->charge_counter_sensor_ != nullptr)
-    this->charge_counter_sensor_->publish_state(counter_raw);
-  if (this->temperature1_sensor_ != nullptr)
-    this->temperature1_sensor_->publish_state(temp1_raw);
-  if (this->temperature2_sensor_ != nullptr)
-    this->temperature2_sensor_->publish_state(temp2_raw);
-  if (this->mode_sensor_ != nullptr)
-    this->mode_sensor_->publish_state(mode);
-  if (this->charging_state_sensor_ != nullptr)
-    this->charging_state_sensor_->publish_state(charging_state);
-
-  this->set_switch_state_(charging_state == 1);
-
-  return true;
+void ESPChargerComponent::set_switch_state(bool state) {
+  if (this->charging_switch != nullptr)
+    this->charging_switch->publish_state(state);
 }
 
-void ESPChargerComponent::set_switch_state_(bool state) {
-  if (this->charging_switch_ != nullptr)
-    this->charging_switch_->publish_state(state);
-}
-
-uint16_t ESPChargerComponent::to_le_u16_(float value, float multiplier) {
+uint16_t ESPChargerComponent::to_le_u16(float value, float multiplier) {
   return static_cast<uint16_t>(std::roundf(value * multiplier));
 }
 
-uint16_t ESPChargerComponent::crc16_cms_(const uint8_t *data, size_t length) {
+uint16_t ESPChargerComponent::crc16_cms(const uint8_t *data, size_t length) {
   uint16_t crc = 0xFFFF;
   for (size_t i = 0; i < length; i++) {
     crc ^= static_cast<uint16_t>(data[i]) << 8;
@@ -263,7 +369,7 @@ uint16_t ESPChargerComponent::crc16_cms_(const uint8_t *data, size_t length) {
   return crc;
 }
 
-uint16_t ESPChargerComponent::crc16_cms_(const std::vector<uint8_t> &data) { return crc16_cms_(data.data(), data.size()); }
+uint16_t ESPChargerComponent::crc16_cms(const std::vector<uint8_t> &data) { return crc16_cms(data.data(), data.size()); }
 
 void ESPChargerVoltageNumber::control(float value) { this->parent_->set_voltage(value); }
 
@@ -276,10 +382,6 @@ void ESPChargerChargingSwitch::write_state(bool state) {
     this->parent_->stop_charging();
   }
 }
-
-void ESPChargerEnableEditButton::press_action() { this->parent_->enable_edit(); }
-
-void ESPChargerGetTelemetryButton::press_action() { this->parent_->request_telemetry(); }
 
 }  // namespace espcharger
 }  // namespace esphome

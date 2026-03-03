@@ -63,11 +63,11 @@ async def to_code(config):
 
     if voltage_config := config.get(CONF_VOLTAGE):
         sens = await sensor.new_sensor(voltage_config)
-        cg.add(parent.set_telemetry_voltage_sensor(sens))
+        cg.add(parent.set_output_voltage_sensor(sens))
 
     if current_config := config.get(CONF_CURRENT):
         sens = await sensor.new_sensor(current_config)
-        cg.add(parent.set_telemetry_current_sensor(sens))
+        cg.add(parent.set_output_current_sensor(sens))
 
     if counter_config := config.get(CONF_CHARGE_COUNTER):
         sens = await sensor.new_sensor(counter_config)

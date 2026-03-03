@@ -5,21 +5,26 @@ from esphome.const import CONF_ID
 
 CODEOWNERS = ["@esphome"]
 DEPENDENCIES = ["uart"]
-AUTO_LOAD = ["sensor", "number", "switch", "button"]
+AUTO_LOAD = ["sensor", "number", "switch"]
 
 espcharger_ns = cg.esphome_ns.namespace("espcharger")
 ESPChargerComponent = espcharger_ns.class_(
-    "ESPChargerComponent", cg.Component, uart.UARTDevice
+    "ESPChargerComponent", cg.PollingComponent, uart.UARTDevice
 )
 
-CONFIG_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(ESPChargerComponent),
-    }
-).extend(uart.UART_DEVICE_SCHEMA)
+CONFIG_SCHEMA = (
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(ESPChargerComponent),
+        }
+    )
+    .extend(cv.polling_component_schema("60s"))
+    .extend(uart.UART_DEVICE_SCHEMA)
+)
 
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
+
